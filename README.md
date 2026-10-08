@@ -17,7 +17,7 @@ agent 与工作流。
 ## Install
 
 ```bash
-git clone https://github.com/Phocinae/phocinae-server.git   # 待发布；当前为本地开发
+git clone https://github.com/Phocinae/phocinae-server.git
 cd phocinae-server
 python -m venv .venv && . .venv/bin/activate
 pip install fastapi uvicorn torch
