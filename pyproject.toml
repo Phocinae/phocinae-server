@@ -1,6 +1,6 @@
 [project]
 name = "phocinae-server"
-version = "0.1.1"
+version = "0.1.3"
 description = "Self-contained typed-decisions (system-one) inference server for the Phocinae-Largha-150M-v1 model"
 readme = "README.md"
 license = { text = "Apache-2.0" }

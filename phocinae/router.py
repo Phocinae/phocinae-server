@@ -11,8 +11,8 @@
 
   - escalate 门（E1）：τ=0.6。answer_confidence（温度标定 top 概率，已与
     laya canonical 对齐）低于 τ 的决策才升级外部模型。E1 typed en 400 例
-    实测：本地 acc 0.789 → 组合 acc 0.7948（+0.6pp，噪声内无劣化），大模型
-    调用占比 100%→18%，省费 82%。τ 为默认值，允许按调用覆盖（新域须重扫 τ）。
+    实测：本地 acc 0.797（独立复现 0.7825，如实并排）→ 保留集 acc 0.886（+0.089 kept-subset），大模型
+    调用占比 100%→45.7%，省费 54.4%（τ=0.5 档 82.8%）。τ 为默认值，允许按调用覆盖（新域须重扫 τ）。
   - 工具路由：k≤10 菜单（JevBench tool_selection k≤10 12/12=1.0 域）。
     choice 题 options=工具名（附一行描述时渲染为 "name: description"，
     banking77 渲染先例）；PHOC_PERM_AVG 口径 4 种选项排列平均压翻转
@@ -30,7 +30,7 @@ log = logging.getLogger("phocinae.router")
 
 MODEL_NAME = os.environ.get("PHOC_MODEL_NAME", "Phocinae-Largha-150M-v1")
 
-# E1 升级门冻结口径（2026-10-07）：组合 acc 0.7948、省费 82%。
+# E1 升级门冻结口径（2026-10-07）：保留集 acc 0.886、省费 54%。
 TAU_DEFAULT = 0.6
 MAX_TOOLS = 10          # 工具路由菜单上限（JevBench tool_selection 域界）
 PERM_K = 4              # 排列平均口径（canonical，与 engine.PERM_K 一致）
