@@ -81,7 +81,7 @@ POST /v1/systemone/batch    批量（≤64 个请求）
 | 路径 | p50 |
 |---|---|
 | GPU fp16 + torch.compile（整请求） | ~2 ms（可选编译加速，非发布口径） |
-| CPU fp32 8 线程（整请求） | 35.97 ms |
+| CPU fp32 8 线程（单决策整请求） | ≈36 ms p50（整 case 摊销 ≈57 ms/决策） |
 
 GPU 前向经 `torch.compile(reduce-overhead, dynamic)` 融合（eager 18.6ms → 编译后 ~2ms）；加载时预热常用 batch 形状，首问无形状抖动。
 
