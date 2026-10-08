@@ -1,7 +1,10 @@
 [project]
 name = "phocinae-server"
-version = "0.1.0"
+version = "0.1.1"
 description = "Self-contained typed-decisions (system-one) inference server for the Phocinae-Largha-150M-v1 model"
+readme = "README.md"
+license = { text = "Apache-2.0" }
+keywords = ["decision-model", "typed-decisions", "structured-decisions", "small-model", "cpu-inference"]
 requires-python = ">=3.10"
 dependencies = [
     "fastapi>=0.100",

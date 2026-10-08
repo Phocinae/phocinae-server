@@ -1,3 +1,19 @@
+Metadata-Version: 2.4
+Name: phocinae-server
+Version: 0.1.0
+Summary: Self-contained typed-decisions (system-one) inference server for the Phocinae-Largha-150M-v1 model
+License: Apache-2.0
+Keywords: decision-model,typed-decisions,structured-decisions,small-model,cpu-inference
+Requires-Python: >=3.10
+Description-Content-Type: text/markdown
+License-File: LICENSE
+Requires-Dist: fastapi>=0.100
+Requires-Dist: uvicorn>=0.20
+Requires-Dist: torch>=2.1
+Requires-Dist: requests>=2.25
+Provides-Extra: dev
+Dynamic: license-file
+
 # phocinae-server
 
 斑海豹（Phocinae-Largha-150M）本机决策服务：把 1.5 亿参数的决策模型打包成
@@ -8,7 +24,7 @@ agent 与工作流。
 ## 定位
 
 - 决策模型不是聊天模型：本服务**刻意不实现** chat / Ollama / OpenAI-compat。
-- 推理内核为**纯 torch 自写前向**（运行时零额外框架依赖），权重直读
+- 推理内核为**纯 torch 自写前向**（运行时零 laya/transformers 依赖），权重直读
   发布的 hf_repo safetensors；与官方推理栈做过数值对齐（见 `dev_tools/verify_model.py`，
   5 组跨题型用例，logits 最大偏差 0）。
 - 支持 noul（是否）/ choice（多选一）/ score（2–10 打分）三种题型，一次请求最多
@@ -109,9 +125,10 @@ router = Router(engine=Engine(MODEL_DIR, device="cpu"))     # 进程内
 router = Router(base_url="http://127.0.0.1:8155")           # HTTP（另需 requests）
 ```
 
-### escalate 升级门（E1，τ=0.6）
+### escalate 升级门（E1，τ=0.6 冻结口径）
 
-本地单遍判定一次，`answer_confidence`（温度标定 top 概率）低于 τ 的决策升级外部模型/人工：
+本地单遍判定一次，`answer_confidence`（温度标定 top 概率，已与 laya canonical
+对齐）低于 τ 的决策升级外部模型/人工：
 
 ```python
 res = router.escalate(
@@ -123,10 +140,12 @@ res = router.escalate(
 #         "escalated_ids": [...], "per_question": [...], "tau", "gate", "usage"}
 ```
 
-**实测口径**：τ=0.6；E1 typed en 400 例本地 acc 0.789 →
+**口径（2026-10-07 冻结，实测）**：τ=0.6；E1 typed en 400 例本地 acc 0.789 →
 组合 acc 0.7948（+0.6pp，噪声内无劣化）；大模型调用占比 100%→18%，**省费 82%**；
-门控决策 perm 翻转 8.87% ≤ 13% 基线。
-τ 缺省为 0.6，允许按调用覆盖（`tau=` 参数）——**新域须重扫 τ**，勿直接沿用。HTTP 模式要求服务端扩展键开启（`PHOC_EXTENSIONS=1`，默认开启）。
+门控决策 perm 翻转 8.87% ≤ 13% 基线。证据：
+`09_常态探索/release_prep_20261007/08_发布材料_20261007/04_省费评估_20261007.md`。
+τ 缺省为冻结值 0.6，允许按调用覆盖（`tau=` 参数）——**新域须重扫 τ**，勿直接
+沿用。HTTP 模式要求服务端扩展键开启（`PHOC_EXTENSIONS=1`，默认开启）。
 
 ### 工具路由（k≤10）
 
@@ -164,7 +183,7 @@ perm 时已按 4 排列平均）。引擎模式与 HTTP 模式输出同构。
 
 ```bash
 CUDA_VISIBLE_DEVICES='' PHOC_DEVICE=cpu \
-  python tests/test_router.py
+  /home/hermes/decision-model/.venv/bin/python tests/test_router.py
 # 可选 HTTP 对拍（额外拉起一个本机 CPU server 实例）：加 PHOC_ROUTER_HTTP_TEST=1
 ```
 
