@@ -74,13 +74,16 @@ POST /v1/systemone/batch    批量（≤64 个请求）
 
 ## 性能（实测，本机 RTX 5090 / 20 核 CPU）
 
+发布口径（与模型卡一致）：GPU fp16 p50 **18.6 ms**（eager 模型前向）· CPU 单线程 **1.51 s**（tokenize + 前向 + 组装）。
+
+服务整请求实测：
+
 | 路径 | p50 |
 |---|---|
-| GPU fp16 + torch.compile（整请求） | **1.75 ms** |
+| GPU fp16 + torch.compile（整请求） | ~2 ms（可选编译加速，非发布口径） |
 | CPU fp32 8 线程（整请求） | 35.97 ms |
 
-GPU 前向经 `torch.compile(reduce-overhead, dynamic)` 融合（eager 14.1ms → 编译后
-~2ms）；加载时预热常用 batch 形状，首问无形状抖动。
+GPU 前向经 `torch.compile(reduce-overhead, dynamic)` 融合（eager 18.6ms → 编译后 ~2ms）；加载时预热常用 batch 形状，首问无形状抖动。
 
 ## 安全声明
 
