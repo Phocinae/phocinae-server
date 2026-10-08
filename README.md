@@ -1,6 +1,6 @@
 # phocinae-server
 
-斑海豹（Phocinae-Largha-150M）本机决策服务：把 1.5 亿参数的决策模型打包成
+斑海豹（Phocinae-Largha-150M）本机决策服务：把 1.44 亿参数的决策模型打包成
 一行 `pip install` 级别依赖的 FastAPI 服务，把 `POST /v1/systemone` 契约带给
 任何本机工具。**不提供对外服务**——它监听 127.0.0.1，只服务你自己机器上的
 agent 与工作流。
@@ -74,7 +74,7 @@ POST /v1/systemone/batch    批量（≤64 个请求）
 
 ## 性能（实测，本机 RTX 5090 / 20 核 CPU）
 
-发布口径（与模型卡一致）：GPU fp16 p50 **18.6 ms**（eager 模型前向）· CPU 单线程 **1.51 s**（tokenize + 前向 + 组装）。
+发布口径（与模型卡一致）：GPU fp16 p50 **21.0 ms**（RTX 5090，eager 模型前向）· CPU 单线程 **1.64 s**（tokenize + 前向 + 组装）。
 
 服务整请求实测：
 
@@ -83,7 +83,7 @@ POST /v1/systemone/batch    批量（≤64 个请求）
 | GPU fp16 + torch.compile（整请求） | ~2 ms（可选编译加速，非发布口径） |
 | CPU fp32 8 线程（单决策整请求） | ≈36 ms p50（整 case 摊销 ≈57 ms/决策） |
 
-GPU 前向经 `torch.compile(reduce-overhead, dynamic)` 融合（eager 18.6ms → 编译后 ~2ms）；加载时预热常用 batch 形状，首问无形状抖动。
+GPU 前向经 `torch.compile(reduce-overhead, dynamic)` 融合（eager 21.0ms（RTX 5090）→ 编译后 ~2ms）；加载时预热常用 batch 形状，首问无形状抖动。
 
 ## 安全声明
 
@@ -126,8 +126,8 @@ res = router.escalate(
 #         "escalated_ids": [...], "per_question": [...], "tau", "gate", "usage"}
 ```
 
-**实测口径**：τ=0.6；E1 typed en 400 例本地 acc 0.797（独立复现 0.7825，如实并排）→
-保留集 acc 0.886（+0.089 kept-subset）；大模型调用占比 100%→45.7%，**省费 54.4%**（τ=0.5 档 82.8%）；
+**实测口径**：τ=0.6；E1 typed en 400 例本地 acc 0.906（独立复现 0.9055，如实并排）→
+保留集 acc **0.9936**（+0.0876 kept-subset）；大模型调用占比 100%→45.0%，**省费 55.0%**（τ=0.5 档 79.6%）；
 （门控决策稳定性复算见 exp/tau_recheck_20261008/。）
 τ 缺省为 0.6，允许按调用覆盖（`tau=` 参数）——**新域须重扫 τ**，勿直接沿用。HTTP 模式要求服务端扩展键开启（`PHOC_EXTENSIONS=1`，默认开启）。
 
