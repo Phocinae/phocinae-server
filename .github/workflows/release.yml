@@ -82,14 +82,67 @@ jobs:
       name: pypi
       url: https://pypi.org/p/phocinae-server
     steps:
-      - uses: actions/download-artifact@v4
-        with:
-          name: dist
-          path: dist-upload/
 
-      - name: Publish to PyPI
+      # Fail fast, and say what to do. The OIDC exchange is the one step whose failure
+      # the committer cannot see in the diff, and finding out after a full build wastes
+      # minutes and prints a wall of JWT claims instead of an instruction. PyPI has no
+      # API for configuring a trusted publisher (its settings page answers 403 to a
+      # token), so the only fix is a human on that page — this step names it.
+      - name: Preflight the PyPI credential
+        id: preflight
+        env:
+          PYPI_API_TOKEN: ${{ secrets.PYPI_API_TOKEN }}
+        run: |
+          if [ -n "${PYPI_API_TOKEN}" ]; then
+            echo "PYPI_API_TOKEN secret present; publishing with the token."
+            echo "use_token=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "No PYPI_API_TOKEN secret; using OIDC trusted publishing."
+
+          AUDIENCE="$(curl -fsS --max-time 30 https://pypi.org/_/oidc/audience \
+            | python -c 'import json,sys; print(json.load(sys.stdin)["audience"])')"
+          echo "PyPI OIDC audience: ${AUDIENCE}"
+          if [ -z "${ACTIONS_ID_TOKEN_REQUEST_URL:-}" ]; then
+            echo "::error::'id-token: write' is missing from this job's permissions."
+            exit 1
+          fi
+          CODE="$(curl -sS -o /tmp/oidc.json -w '%{http_code}' --max-time 30 \
+            -H "Authorization: bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" \
+            "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=${AUDIENCE}")"
+          if [ "${CODE}" != "200" ]; then
+            echo "::error::Could not mint a GitHub OIDC token (HTTP ${CODE})."
+            cat /tmp/oidc.json || true
+            exit 1
+          fi
+          echo "GitHub OIDC token minted OK."
+          echo "If the upload step reports 'invalid-publisher', trusted publishing is"
+          echo "not configured for this project. It has to be set once on the web —"
+          echo "there is no API for it:"
+          echo "  https://pypi.org/manage/project/phocinae-server/settings/publishing/"
+          echo "    PyPI Project Name : phocinae-server"
+          echo "    Owner             : Phocinae"
+          echo "    Repository name   : phocinae-server"
+          echo "    Workflow filename : release.yml"
+          echo "    Environment name  : pypi"
+          echo "Or set a repository secret named PYPI_API_TOKEN to publish with a token."
+
+      - name: Publish to PyPI (OIDC)
+        if: ${{ steps.preflight.outputs.use_token != 'true' }}
         uses: pypa/gh-action-pypi-publish@release/v1
         with:
+          packages-dir: dist-upload/
+          # A re-run of an already-published tag is a no-op, not a failure.
+          skip-existing: true
+
+
+      - name: Publish to PyPI (API token)
+        # Only used when a PYPI_API_TOKEN secret exists;
+        # the default path stays the keyless OIDC exchange.
+        if: ${{ steps.preflight.outputs.use_token == 'true' }}
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          password: ${{ secrets.PYPI_API_TOKEN }}
           packages-dir: dist-upload/
           # A re-run of an already-published tag is a no-op, not a failure.
           skip-existing: true
