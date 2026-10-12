@@ -1,6 +1,11 @@
 # phocinae-server — HTTP API Reference
 
-The real contract of `phocinae/server.py` (v0.1.0). Base URL: `http://127.0.0.1:8155` by default; interactive docs at `/docs`. All bodies are JSON. The API is **deliberately not OpenAI-compatible** (no chat/completions layer — this model is not a chat model).
+The real contract of `phocinae/server.py` (v0.1.5). Base URL: `http://127.0.0.1:8155` by default; interactive docs at `/docs`. All bodies are JSON. The API is **deliberately not OpenAI-compatible** (no chat/completions layer — this model is not a chat model).
+
+Requires `PHOC_MODEL_DIR` (see [README](../README.md)). The engine is built during
+FastAPI lifespan startup — importing `phocinae.server` does not load a model. Until
+startup finishes, `/health` reports `status: "starting"` / `model_loaded: false` and
+every `/v1/*` call returns **503** with `Retry-After: 5` (never a half-initialised answer).
 
 ## Endpoints
 
@@ -23,10 +28,10 @@ Response: `{"service": "phocinae-server", "model": "<PHOC_MODEL_NAME>", "docs": 
 
 | field | type | meaning |
 |---|---|---|
-| `status` | string | `"ok"` while the service is up |
+| `status` | string | `"ok"` once the engine is loaded, `"starting"` before that |
 | `model` | string | served model name (default `Phocinae-Largha-150M-v1`) |
 | `model_loaded` | bool | true once the engine finished loading |
-| `device` | string | `"cpu"` or `"cuda"` |
+| `device` | string \| null | `"cpu"` or `"cuda"`; `null` while not loaded |
 | `uptime_s` | float | seconds since process start |
 
 ## GET /v1/models
@@ -108,7 +113,9 @@ Body: either a JSON array of `systemone` requests, or `{"requests": [...]}`. Emp
 |---|---|
 | **422** | unknown model; unknown question type; >64 questions; empty/duplicate question `id`; choice missing/empty/>255 options; score carrying options; noul threshold outside [0,1]; empty or >64-item batch; malformed body / missing fields (FastAPI validation) |
 | **413** | body > 2 MiB (`PHOC_MAX_BODY`); body: `{"error": {"code": 413, "message": "request body exceeds the N-byte limit"}}` |
-| **401** | `PHOC_BEARER_TOKEN` set and `Authorization: Bearer <token>` missing or wrong → `{"detail": "missing or invalid bearer token"}` |
+| **401** | `PHOC_BEARER_TOKEN` set and `Authorization: Bearer <token>` missing or wrong → `{"detail": "missing or invalid bearer token"}` (compared in constant time) |
+| **503** | engine not loaded yet (startup still running or failed) → `{"detail": "model not loaded yet (startup still in progress or failed); poll /health and retry"}` + `Retry-After: 5` |
+| **exit 2 / exit 3** | `PHOC_MODEL_DIR` unset or unusable: `python -m phocinae.main` prints an actionable message and exits 2; a bare `uvicorn phocinae.server:app` fails lifespan startup and exits 3 |
 
 ## curl examples
 
@@ -141,7 +148,7 @@ curl -s http://127.0.0.1:8155/v1/systemone -H "Authorization: Bearer $PHOC_BEARE
 
 | variable | default | purpose |
 |---|---|---|
-| `PHOC_MODEL_DIR` | (dev path in source) | directory of the released model repo (`model.safetensors`, `encoder/`, `rl_agent_config.json`, `tokenizer/`) — set it in practice |
+| `PHOC_MODEL_DIR` | **(required)** | directory of the released model repo (`model.safetensors`, `encoder/`, `rl_agent_config.json`, `tokenizer/`) — download it from <https://huggingface.co/Phocinae/Phocinae-Largha-150M-v1>; unset/unusable → startup fails with an actionable message |
 | `PHOC_MODEL_NAME` | `Phocinae-Largha-150M-v1` | served model name |
 | `PHOC_HOST` / `PHOC_PORT` | `127.0.0.1` / `8155` | listen address |
 | `PHOC_DEVICE` | `auto` | `auto` / `cuda` / `cpu` (no GPU → CPU fp32 fallback) |

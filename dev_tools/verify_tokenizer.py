@@ -4,7 +4,9 @@ Loads the same tokenizer.json both ways and asserts identical encode() output
 (and decode round-trips) over a corpus covering ASCII/unicode/newlines/tabs/
 CJK/emoji/added-token runs/long words.
 
-Usage: /home/hermes/decision-model/.venv/bin/python dev_tools/verify_tokenizer.py
+Usage: PHOC_MODEL_DIR=/path/to/hf_repo python dev_tools/verify_tokenizer.py
+       (needs the reference `tokenizers` package; the JSONL corpus below is
+        optional and simply skipped when PHOC_TD_TEST_JSONL is unset)
 """
 
 import json
@@ -15,10 +17,13 @@ import sys
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 sys.path.insert(0, ROOT)
+sys.path.insert(0, os.path.join(ROOT, "tests"))
+
+from _util import require_model_dir  # noqa: E402
 
 from phocinae.tokenizer import GemmaTokenizer  # noqa: E402
 
-MODEL_DIR = "/home/hermes/decision-model/09_常态探索/release_prep_20261007/02_hf_release/hf_repo"
+MODEL_DIR = require_model_dir("dev_tools/verify_tokenizer.py")
 TOK_DIR = os.path.join(MODEL_DIR, "tokenizer")
 
 
@@ -55,19 +60,27 @@ def main():
     for _ in range(40):
         n = rng.randint(0, 300)
         corpus.append("".join(rng.choice(alphabet) for _ in range(n)))
-    # round-trip decode corpus from real td rows' states
+    # round-trip decode corpus from real td rows' states (optional: the test
+    # split is a separate dataset, so point PHOC_TD_TEST_JSONL at it)
     td_rows = 0
-    with open("/home/hermes/decision-model/exp/typed_decisions_test.jsonl",
-              encoding="utf-8") as fh:
-        for line in fh:
-            line = line.strip()
-            if not line:
-                continue
-            r = json.loads(line)
-            corpus.append(r.get("state", ""))
-            td_rows += 1
-            if td_rows >= 25:
-                break
+    jsonl = os.environ.get("PHOC_TD_TEST_JSONL", "").strip()
+    if jsonl:
+        if not os.path.isfile(jsonl):
+            print("SKIP td corpus: PHOC_TD_TEST_JSONL=%r not found" % jsonl)
+        else:
+            with open(jsonl, encoding="utf-8") as fh:
+                for line in fh:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    r = json.loads(line)
+                    corpus.append(r.get("state", ""))
+                    td_rows += 1
+                    if td_rows >= 25:
+                        break
+    else:
+        print("SKIP td corpus (set PHOC_TD_TEST_JSONL=/path/to/"
+              "typed_decisions_test.jsonl to include it)")
 
     bad = 0
     for i, text in enumerate(corpus):

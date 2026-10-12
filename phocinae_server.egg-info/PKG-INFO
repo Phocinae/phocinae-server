@@ -1,6 +1,6 @@
 Metadata-Version: 2.4
 Name: phocinae-server
-Version: 0.1.5
+Version: 0.1.6
 Summary: Self-contained typed-decisions (system-one) inference server for the Phocinae-Largha-150M-v1 model
 License: Apache-2.0
 Project-URL: Homepage, https://github.com/Phocinae/phocinae-server
@@ -14,10 +14,25 @@ Requires-Dist: fastapi>=0.100
 Requires-Dist: uvicorn>=0.20
 Requires-Dist: torch>=2.1
 Requires-Dist: requests>=2.25
+Requires-Dist: numpy>=1.24
 Provides-Extra: dev
 Dynamic: license-file
 
+<img src="docs/assets/logo_phocinae.png" width="150" alt="斑海豹 Phocinae logo">
+
 # phocinae-server
+
+斑海豹 144.3M 决策模型的**本机推理服务**：TypeSafe System One 兼容 API，`POST /v1/systemone` 一次前向回答 noul / choice / score 三题型。
+
+<p>
+  <img alt="PyPI" src="https://img.shields.io/static/v1?label=PyPI&message=phocinae-server&color=blue&style=flat-square">
+  <img alt="Python" src="https://img.shields.io/static/v1?label=Python&message=3.10%2B&color=3776AB&style=flat-square">
+  <img alt="API" src="https://img.shields.io/static/v1?label=API&message=%2Fv1%2Fsystemone&color=6f42c1&style=flat-square">
+  <img alt="License" src="https://img.shields.io/static/v1?label=License&message=Apache-2.0&color=blue&style=flat-square">
+</p>
+
+<img src="docs/assets/server_api.png" width="880" alt="phocinae-server 真实 API 输出">
+<p><sub>▲ 真实输出：`/health`、`/v1/models` 与一次三题型 `POST /v1/systemone`</sub></p>
 
 斑海豹（Phocinae-Largha-150M）本机决策服务：把 1.44 亿参数的决策模型打包成
 一行 `pip install` 级别依赖的 FastAPI 服务，把 `POST /v1/systemone` 契约带给
@@ -34,6 +49,9 @@ agent 与工作流。
   64 题、choice 最多 255 选项、上下文预算 8192 token。
 
 ## Install
+
+<img src="docs/assets/S24_quickstart.gif" width="720" alt="S24 演示动画">
+<p><sub>▲ **合成演示动画**（模型仓 docs/gallery [S24](https://huggingface.co/Phocinae/Phocinae-Largha-150M-v1/blob/main/docs/gallery)）：画面为逐帧渲染、场景数据虚构，但它演示的 **「安装 → 启动 → 一次 POST /v1/systemone 判定」三步流程** 与真实实现一致（本页上方的终端截图即真实运行的同一流程）。</sub></p>
 
 ```bash
 git clone https://github.com/Phocinae/phocinae-server.git

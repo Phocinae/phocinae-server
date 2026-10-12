@@ -11,13 +11,18 @@ import os
 import sys
 import time
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+HERE = os.path.dirname(os.path.abspath(__file__))
+ROOT = os.path.dirname(HERE)
+sys.path.insert(0, ROOT)
+sys.path.insert(0, HERE)
 
 import numpy as np
 
+from _util import require_model_dir  # noqa: E402
+
 from phocinae.engine import Engine
 
-MODEL_DIR = "/home/hermes/decision-model/09_常态探索/release_prep_20261007/02_hf_release/hf_repo"
+MODEL_DIR = require_model_dir("tests/gpu_robustness.py")
 
 SAMPLES = [
     ("The system processed 3 invoices without errors.", "choice",

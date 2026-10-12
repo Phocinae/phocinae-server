@@ -7,7 +7,9 @@ harness compares, for P0-shaped requests:
   3. decoded probabilities / answers / answer_confidence /
      act_probability                                       -> exact / 1e-3
 
-Usage: /home/hermes/decision-model/.venv/bin/python dev_tools/verify_model.py
+Usage: PHOC_MODEL_DIR=/path/to/hf_repo python dev_tools/verify_model.py
+       (also needs the laya reference stack, which only the author's environment
+        has; PHOC_MODEL_DIR unset -> SKIP with exit 0)
 """
 
 import json
@@ -15,14 +17,17 @@ import os
 import random
 import sys
 
-import numpy as np
-import torch
-
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 sys.path.insert(0, ROOT)
+sys.path.insert(0, os.path.join(ROOT, "tests"))
 
-MODEL_DIR = "/home/hermes/decision-model/09_常态探索/release_prep_20261007/02_hf_release/hf_repo"
+from _util import require_model_dir  # noqa: E402
+
+MODEL_DIR = require_model_dir("dev_tools/verify_model.py")
+
+import numpy as np  # noqa: E402
+import torch  # noqa: E402
 
 
 def render_choice(opts):

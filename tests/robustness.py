@@ -8,22 +8,61 @@
   R4 确定性（同输入重放 5 次，逐位一致）
   R5 重启恢复（重建 app 后决策与重启前一致）
   R6 边界尺寸（1 题 / 64 题 / 255 选项 / 超长 state）
-用法: PHOC_DEVICE=cpu /home/hermes/decision-model/.venv/bin/python tests/robustness.py
+用法: PHOC_DEVICE=cpu PHOC_MODEL_DIR=/path/to/hf_repo python tests/robustness.py
+      (PHOC_MODEL_DIR 未设置时跳过：不加载模型，退出码 0)
+
+注意：phocinae.server 在 import 时不再构建引擎（改为 lifespan 启动时加载），
+所以下面的 TestClient 必须用 `with` 进入，让 startup 真正执行。
 """
 import json
 import os
-import resource
+import sys
 import time
+
+try:  # POSIX only; the RSS drift check degrades gracefully on Windows
+    import resource
+except ImportError:  # pragma: no cover
+    resource = None
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+ROOT = os.path.dirname(HERE)
+sys.path.insert(0, ROOT)
+sys.path.insert(0, HERE)
 
 os.environ.setdefault("PHOC_DEVICE", "cpu")
 os.environ.setdefault("CUDA_VISIBLE_DEVICES", "")
 
+from _util import require_model_dir  # noqa: E402
+
+# Skip before importing the heavy/optional test stack: this script is useless
+# without weights, and TestClient needs httpx2 which may not be installed.
+MODEL_DIR = require_model_dir("tests/robustness.py")
+
 import numpy as np  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
 
-from phocinae.server import app  # noqa: E402
+from phocinae.server import create_app  # noqa: E402
 
-client = TestClient(app)
+client = None  # set in main() once the engine is up
+
+
+class _ClientProxy:
+    """Late-bound TestClient: functions below take `client` as a parameter."""
+
+    def __init__(self):
+        self._c = None
+
+    def bind(self, client):
+        self._c = client
+
+    def post(self, *a, **kw):
+        return self._c.post(*a, **kw)
+
+    def get(self, *a, **kw):
+        return self._c.get(*a, **kw)
+
+
+client = _ClientProxy()
 MODEL = "Phocinae-Largha-150M-v1"
 
 PASS = 0
@@ -114,10 +153,17 @@ def r2():
     check("R2 并发无死锁且吞吐合理", dt < 180, "elapsed %.1fs" % dt)
 
 
+def _rss_kb():
+    """Peak RSS in KB, or None where getrusage is unavailable (Windows)."""
+    if resource is None:
+        return None
+    return resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+
+
 # ---------- R3 长跑稳定性 ----------
 def r3():
     lat = []
-    rss0 = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+    rss0 = _rss_kb()
     q = {"id": "q1", "type": "score"}
     for i in range(1000):
         t0 = time.time()
@@ -126,17 +172,21 @@ def r3():
         if r.status_code != 200:
             check("R3 第 %d 次请求 200" % i, False, "got %d" % r.status_code)
             break
-    rss1 = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
-    drift = (rss1 - rss0) / 1024.0
+    rss1 = _rss_kb()
     p50 = np.percentile(lat, 50)
     p95 = np.percentile(lat, 95)
     first = np.percentile(lat[:100], 50)
     last = np.percentile(lat[-100:], 50)
     check("R3 1000 请求全 200", True)
-    check("R3 RSS 漂移 < 200MB", drift < 200, "%.1f MB" % drift)
+    if rss0 is None or rss1 is None:
+        RESULTS.append("INFO R3 RSS 漂移未测（Windows 无 getrusage）")
+    else:
+        drift = (rss1 - rss0) / 1024.0
+        check("R3 RSS 漂移 < 200MB", drift < 200, "%.1f MB" % drift)
+        RESULTS.append("INFO R3 RSS漂移=%.1fMB" % drift)
     check("R3 p50 头尾稳定(<2×)", max(last, 1e-6) < 2 * max(first, 1e-6),
           "first %.1fms last %.1fms" % (first, last))
-    RESULTS.append("INFO R3 p50=%.1fms p95=%.1fms RSS漂移=%.1fMB" % (p50, p95, drift))
+    RESULTS.append("INFO R3 p50=%.1fms p95=%.1fms" % (p50, p95))
 
 
 # ---------- R4 确定性 ----------
@@ -154,11 +204,10 @@ def r5():
     q = {"id": "q1", "type": "choice", "options": ["A", "B", "C"]}
     body = req("The invoice total is 120 USD.", [q])
     a1 = client.post("/v1/systemone", json=body).json()["answers"]
-    # 模拟重启：create_app() 重建全新引擎实例（新 app + 新 engine）
-    from phocinae.server import create_app
+    # 模拟重启：create_app() 重建全新引擎实例（新 app + 新 engine，lifespan 内加载）
     app2 = create_app()
-    c2 = TestClient(app2)
-    a2 = c2.post("/v1/systemone", json=body).json()["answers"]
+    with TestClient(app2) as c2:
+        a2 = c2.post("/v1/systemone", json=body).json()["answers"]
     check("R5 重启后决策一致", a1 == a2, "%s vs %s" % (a1, a2))
 
 
@@ -182,7 +231,11 @@ def r6():
 
 if __name__ == "__main__":
     t0 = time.time()
-    r1(); r2(); r3(); r4(); r5(); r6()
+    # `with` runs the lifespan startup -> the engine is loaded here (importing
+    # phocinae.server no longer loads anything).
+    with TestClient(create_app()) as _c:
+        client.bind(_c)
+        r1(); r2(); r3(); r4(); r5(); r6()
     print("PASS=%d FAIL=%d elapsed=%.1fs" % (PASS, FAIL, time.time() - t0))
     for line in RESULTS:
         print(line)

@@ -177,6 +177,124 @@ def validate_route(res):
 
 
 # ------------------------------------------------------------ 引擎模式测试
+
+# ---------------------------------------------------------------- S7 代理
+def test_loopback_proxy_bypass():
+    """S7：回环目标不得走系统代理，远端目标保留用户代理配置。
+
+    背景：`requests` 不遵守 Windows 的 ProxyOverride 绕过列表，
+    在开了代理的机器上 `http://127.0.0.1:...` 会被送到代理并得到 502。
+    """
+    try:
+        from phocinae import router as R
+    except ImportError:
+        print("SKIP loopback proxy bypass (phocinae.router not importable)")
+        return
+
+    if not hasattr(R, "_is_loopback_target"):
+        print("SKIP loopback proxy bypass (_is_loopback_target not present)")
+        return
+
+    cases = [
+        ("http://127.0.0.1:8155", True),
+        ("http://127.0.0.1:1/v1/systemone", True),
+        ("http://localhost:8155", True),
+        ("http://[::1]:8155", True),
+        ("http://10.1.2.3:8155", True),
+        ("http://192.168.1.5:8155", True),
+        ("http://172.16.9.9:8155", True),
+        ("https://router.example.com/v1/systemone", False),
+        ("https://8.8.8.8/v1/systemone", False),
+    ]
+    for url, want in cases:
+        got = R._is_loopback_target(url)
+        check("loopback detect %s -> %s" % (url, want), got is want,
+              "got %r" % (got,))
+
+    # 请求路径上确实传了 proxies：stub 掉 _post 观察调用参数
+    try:
+        import requests as _requests  # noqa: F401
+    except ImportError:
+        print("SKIP loopback proxy bypass request-path half "
+              "(requests not installed)")
+        return
+
+    from phocinae.router import Router
+
+    seen = {}
+
+    class _Resp:
+        status_code = 200
+        text = ""
+
+        @staticmethod
+        def json():
+            return {"answers": {"tool": 0},
+                    "answer_confidence": {"tool": 0.9},
+                    "option_scores": {"tool": [1.0] * len(TOOL_NAMES)}}
+
+    real_post = R.Router._post
+
+    def spy(self, url, payload, headers):
+        seen["url"] = url
+        seen["proxies"] = ({"http": None, "https": None}
+                           if R._is_loopback_target(url) else None)
+        return _Resp()
+
+    R.Router._post = spy
+    try:
+        out = Router(base_url="http://127.0.0.1:1").route_tool("state", TOOLS)
+        check("loopback request bypasses proxy",
+              seen.get("proxies") == {"http": None, "https": None},
+              "proxies=%r url=%r" % (seen.get("proxies"), seen.get("url")))
+        check("loopback route still works", out["tool"] == TOOL_NAMES[0])
+        seen.clear()
+        Router(base_url="https://router.example.com").route_tool("state", TOOLS)
+        check("remote request keeps proxy config", seen.get("proxies") is None,
+              "proxies=%r" % (seen.get("proxies"),))
+    finally:
+        R.Router._post = real_post
+
+
+def test_router_index_validation():
+    """S6：服务端给的 choice 下标必须校验类型与范围，而不是直接拿去索引。
+
+    原实现 `names[body["answers"]["tool"]]` 在畸形应答下抛 IndexError /
+    TypeError（裸异常，调用方抓不到 RouterHTTPError）；bool 是 int 的子类，
+    所以必须显式排除。这里用 stub 应答覆盖各种畸形形状。
+    """
+    try:
+        from phocinae import router as R
+    except ImportError:
+        print("SKIP router index validation (phocinae.router not importable)")
+        return
+
+    if not hasattr(R, "_tool_index"):
+        print("SKIP router index validation (_tool_index not present)")
+        return
+
+    k = len(TOOL_NAMES)
+    for raw in (0, k - 1):
+        try:
+            got = R._tool_index(raw, k)
+            check("_tool_index(%r, %d) -> %r" % (raw, k, raw), got == raw,
+                  "got %r" % (got,))
+        except Exception as exc:  # noqa: BLE001
+            check("_tool_index(%r, %d) -> %r" % (raw, k, raw), False,
+                  "%s: %s" % (type(exc).__name__, exc))
+
+    for raw in (-1, k, k + 100, 1.5, None, True, False, "", "abc", [], {}):
+        try:
+            got = R._tool_index(raw, k)
+            check("_tool_index(%r, %d) must raise" % (raw, k), False,
+                  "returned %r instead of raising" % (got,))
+        except R.RouterHTTPError:
+            check("_tool_index(%r, %d) must raise" % (raw, k), True)
+        except Exception as exc:  # noqa: BLE001
+            check("_tool_index(%r, %d) must raise RouterHTTPError" % (raw, k),
+                  False, "raised %s instead" % type(exc).__name__)
+
+
 def test_escalate_gate(router):
     # 低置信样本：一律升级（E1 τ=0.6 冻结）
     for sid, state, q, calib in LOW_SAMPLES:
@@ -351,40 +469,103 @@ def test_http_mode(engine_results):
             proc.kill()
 
 
+def _has_torch():
+    try:
+        import torch  # noqa: F401
+        return True
+    except ImportError:
+        return False
+
+
+def _model_dir_or_none():
+    """PHOC_MODEL_DIR 未设 -> None（跳过模型段）；设了但不是有效目录 -> 抛错。
+
+    设计取舍：未设是「没打算跑模型」（CI/最小安装），设错是「配置错误」。
+    前者应当静默跳过，后者必须响亮失败，否则用户会以为测试跑过了。
+    """
+    d = os.environ.get("PHOC_MODEL_DIR", "").strip()
+    if not d:
+        return None
+    if not os.path.isdir(d):
+        # exit 2：配置错误要与「跑完但有用例失败」（exit 1）区分开，
+        # 否则 CI 上无法一眼看出是环境没配好还是代码坏了。
+        sys.stderr.write(
+            "test_router: PHOC_MODEL_DIR=%r is not a directory.\n"
+            "  Point it at a downloaded model repo, e.g.\n"
+            "    Linux/macOS:  PHOC_MODEL_DIR=/path/to/hf_repo python tests/test_router.py\n"
+            "    PowerShell:   $env:PHOC_MODEL_DIR='D:\\models\\Phocinae-Largha-150M-v1'; "
+            "python tests/test_router.py\n"
+            "  Download: https://huggingface.co/Phocinae/Phocinae-Largha-150M-v1\n" % d)
+        raise SystemExit(2)
+    return d
+
+
 def main():
-    assert "CUDA_VISIBLE_DEVICES" in os.environ and os.environ[
-        "CUDA_VISIBLE_DEVICES"] == "", "must run with CUDA_VISIBLE_DEVICES=''"
-    from phocinae.engine import Engine
-    from phocinae.router import Router
-    print("loading CPU engine (threads=8, ~40s)...", flush=True)
-    eng = Engine(MODEL_DIR, device="cpu", warm=True, threads=8)
-    check("engine on CPU", eng.device.type == "cpu", eng.device.type)
-    router = Router(engine=eng)
-    check("router mode engine", router.mode == "engine")
+    # Windows 的 PowerShell（$env:X=''）与 cmd（set X=）会把「设成空」变成
+    # 「删除变量」，所以「缺失」必须等同于「空」。非空值仍然直接中止：
+    # 这套用例的口径是 CPU 数值，GPU 会改变结果。
+    cuda = os.environ.get("CUDA_VISIBLE_DEVICES")
+    if cuda:
+        print("test_router: CUDA_VISIBLE_DEVICES=%r is set; this suite pins CPU "
+              "and would produce different numbers. Unset it (an empty value is "
+              "fine) to run." % cuda)
+        return 2
 
-    test_escalate_gate(router)
-    test_tool_route(router)
+    # --- model-free checks：无模型、无 torch 也能跑 -------------------
+    test_router_index_validation()
+    test_loopback_proxy_bypass()
 
-    check("Router() without backend -> ValueError",
-          _raises(ValueError, Router))
-    check("Router(engine and base_url) -> ValueError",
-          _raises(ValueError, Router, engine=eng, base_url="http://127.0.0.1:1"))
+    model_dir = _model_dir_or_none()
+    if model_dir is None or not _has_torch():
+        why = ("PHOC_MODEL_DIR is not set" if model_dir is None
+               else "torch is not installed")
+        print()
+        print("test_router: SKIPPED the model-dependent half (%s); "
+              "%d model-free checks passed" % (why, n_checks))
+        return 1 if fails else 0
 
-    engine_results = {
-        "escalate": {
-            LOW_SAMPLES[0][0]: router.escalate(LOW_SAMPLES[0][1], [LOW_SAMPLES[0][2]]),
-            HIGH_SAMPLES[1][0]: router.escalate(HIGH_SAMPLES[1][1], [HIGH_SAMPLES[1][2]]),
-        },
-        "route": router.route_tool(TOOL_SCENARIOS[1][0], TOOLS),
-    }
-    if os.environ.get("PHOC_ROUTER_HTTP_TEST") == "1":
-        test_http_mode(engine_results)
-    else:
-        print("SKIP http parity (set PHOC_ROUTER_HTTP_TEST=1 to enable)")
+    # --- model-dependent checks ---------------------------------------
+    try:
+        from phocinae.engine import Engine
+        from phocinae.router import Router
+        print("loading CPU engine (threads=8)...", flush=True)
+        eng = Engine(model_dir, device="cpu", warm=True, threads=8)
+        check("engine on CPU", eng.device.type == "cpu", eng.device.type)
+        router = Router(engine=eng)
+        check("router mode engine", router.mode == "engine")
+
+        test_escalate_gate(router)
+        test_tool_route(router)
+
+        check("Router() without backend -> ValueError",
+              _raises(ValueError, Router))
+        check("Router(engine and base_url) -> ValueError",
+              _raises(ValueError, Router, engine=eng,
+                      base_url="http://127.0.0.1:1"))
+
+        engine_results = {
+            "escalate": {
+                LOW_SAMPLES[0][0]: router.escalate(LOW_SAMPLES[0][1],
+                                                   [LOW_SAMPLES[0][2]]),
+                HIGH_SAMPLES[1][0]: router.escalate(HIGH_SAMPLES[1][1],
+                                                    [HIGH_SAMPLES[1][2]]),
+            },
+            "route": router.route_tool(TOOL_SCENARIOS[1][0], TOOLS),
+        }
+        if os.environ.get("PHOC_ROUTER_HTTP_TEST") == "1":
+            test_http_mode(engine_results)
+        else:
+            print("SKIP http parity (set PHOC_ROUTER_HTTP_TEST=1 to enable)")
+    except Exception as exc:  # noqa: BLE001 - report, never crash silently
+        import traceback
+        traceback.print_exc()
+        check("engine-mode suite completed", False,
+              "%s: %s" % (type(exc).__name__, exc))
 
     print()
     if fails:
-        print("test_router: FAILED %d checks: %s" % (len(fails), ", ".join(fails)))
+        print("test_router: FAILED %d of %d checks: %s"
+              % (len(fails), n_checks, ", ".join(fails)))
         return 1
     print("test_router: all %d checks passed" % n_checks)
     return 0

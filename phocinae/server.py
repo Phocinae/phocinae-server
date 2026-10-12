@@ -13,19 +13,27 @@ top probability), action (act_probability), option_scores (calibrated
 per-option probability vectors, see /v1/models semantics), routing.
 
 Env config (see README):
-  PHOC_MODEL_DIR     path to the released hf_repo directory
+  PHOC_MODEL_DIR     path to the released hf_repo directory (required)
   PHOC_HOST/PHOC_PORT
   PHOC_DEVICE        auto | cuda | cpu
   PHOC_BEARER_TOKEN  when set, /v1/* require "Authorization: Bearer <token>"
   PHOC_PERM_AVG      1 -> /v1/systemone also averages choice option orders
   PHOC_EXTENSIONS    0 -> omit answer_confidence/action/routing extension keys
   PHOC_THREADS       torch intra-op threads when running on CPU
+
+Importing this module has no side effects: the engine (model weights, tokenizer,
+~30-60 s on CPU) is built in the FastAPI lifespan startup handler, so tooling can
+`import phocinae.server` without a model directory. Any /v1/* request that arrives
+before the engine is ready gets 503 + Retry-After instead of being mishandled.
 """
 
+import hmac
 import json
 import logging
 import os
 import time
+
+from contextlib import asynccontextmanager
 
 from fastapi import Depends, FastAPI, HTTPException, Request
 from pydantic import BaseModel, Field
@@ -42,7 +50,72 @@ EXTENSIONS = os.environ.get("PHOC_EXTENSIONS", "1") != "0"
 
 START_TIME = time.time()
 
-engine: Engine = None  # set by create_app
+# Where to download the weights (README / docs/API.md point here as well).
+MODEL_REPO_URL = "https://huggingface.co/Phocinae/Phocinae-Largha-150M-v1"
+
+# Set during lifespan startup. Kept at module level so /health can report the
+# not-yet-loaded state instead of exploding on a missing attribute.
+engine: Optional[Engine] = None
+
+
+def model_dir_error(detail):
+    """Actionable message for a missing/unusable PHOC_MODEL_DIR."""
+    return (
+        "%s\n"
+        "PHOC_MODEL_DIR must point at a downloaded copy of the released model repo\n"
+        "(the directory containing model.safetensors, encoder/config.json,\n"
+        "rl_agent_config.json and tokenizer/).\n"
+        "\n"
+        "  1. download the weights: %s  (288.6 MB, fp16 safetensors)\n"
+        "  2. point the server at the directory, e.g.\n"
+        "       Linux/macOS:  export PHOC_MODEL_DIR=/path/to/Phocinae-Largha-150M-v1\n"
+        "                     python -m phocinae.main\n"
+        "       PowerShell:   $env:PHOC_MODEL_DIR = 'D:\\models\\Phocinae-Largha-150M-v1'\n"
+        "                     python -m phocinae.main\n"
+        "       one-shot:     PHOC_MODEL_DIR=/path/to/hf_repo python -m phocinae.main\n"
+        "\n"
+        "  (download without git-lfs, python:)\n"
+        "    from huggingface_hub import snapshot_download\n"
+        "    snapshot_download(repo_id='Phocinae/Phocinae-Largha-150M-v1',\n"
+        "                      local_dir=r'D:\\models\\Phocinae-Largha-150M-v1')"
+        % (detail, MODEL_REPO_URL)
+    )
+
+
+def resolve_model_dir():
+    """Resolve PHOC_MODEL_DIR from the environment.
+
+    Returns (model_dir, None) when usable, else (None, actionable_message).
+    Shared by the engine loader and by the `phocinae.main` preflight check so a
+    fresh user sees one consistent, copy-pasteable error.
+    """
+    model_dir = (os.environ.get("PHOC_MODEL_DIR") or "").strip()
+    if not model_dir:
+        return None, model_dir_error("PHOC_MODEL_DIR is not set.")
+    if not os.path.isdir(model_dir):
+        return None, model_dir_error(
+            "PHOC_MODEL_DIR=%r is not an existing directory." % model_dir)
+    if not os.path.isfile(os.path.join(model_dir, "model.safetensors")):
+        return None, model_dir_error(
+            "PHOC_MODEL_DIR=%r has no model.safetensors." % model_dir)
+    return model_dir, None
+
+
+def load_engine():
+    """Build the Engine from the environment. Raises RuntimeError with an
+    actionable message when PHOC_MODEL_DIR is unset or unusable."""
+    model_dir, err = resolve_model_dir()
+    if err is not None:
+        raise RuntimeError(err)
+    device = os.environ.get("PHOC_DEVICE", "auto")
+    perm_avg = os.environ.get("PHOC_PERM_AVG", "0") == "1"
+    threads = os.environ.get("PHOC_THREADS") or None
+    eng = Engine(model_dir, device=device, model_name=MODEL_NAME,
+                 perm_avg=perm_avg, warm=True,
+                 threads=int(threads) if threads else None)
+    log.info("engine ready: %s on %s (perm_avg=%s)", MODEL_NAME,
+             eng.device, perm_avg)
+    return eng
 
 
 # ---------------------------------------------------------------- schemas
@@ -115,7 +188,15 @@ class BodyLimitMiddleware:
 def auth_guard(request: Request):
     if BEARER is not None:
         header = request.headers.get("authorization", "")
-        if header != "Bearer " + BEARER:
+        # Constant-time comparison: a plain != leaks the shared prefix length
+        # of the secret through timing. compare_digest needs same-type operands
+        # (str or bytes); a non-ASCII configured token raises TypeError, which
+        # can only mean "not equal" here, so it fails closed.
+        try:
+            ok = hmac.compare_digest(header, "Bearer " + BEARER)
+        except TypeError:
+            ok = False
+        if not ok:
             raise HTTPException(status_code=401,
                                 detail="missing or invalid bearer token")
 
@@ -180,38 +261,62 @@ def build_response(answers, confs, actions, usage, perm_used, option_scores=None
 
 
 # ------------------------------------------------------------------- app
-def create_app() -> FastAPI:
+def engine_ready():
+    """Dependency for /v1/*: refuse to guess when the model is not loaded yet."""
+    if engine is None:
+        raise HTTPException(
+            status_code=503,
+            detail="model not loaded yet (startup still in progress or failed); "
+                   "poll /health and retry",
+            headers={"Retry-After": "5"})
+
+
+async def _load_engine_on_startup():
+    """FastAPI lifespan entry: the model is loaded here, never at import time."""
     global engine
-    app = FastAPI(title="phocinae-server", version="0.1.0")
+    engine = load_engine()
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    global engine
+    await _load_engine_on_startup()
+    try:
+        yield
+    finally:
+        engine = None
+
+
+def create_app() -> FastAPI:
+    app = FastAPI(title="phocinae-server", version="0.1.5", lifespan=lifespan)
     app.add_middleware(BodyLimitMiddleware, max_bytes=MAX_BODY)
 
     @app.exception_handler(_BodyTooLarge)
     async def _on_body_too_large(request, exc):
         return _body_limit_response(MAX_BODY)
 
-    model_dir = os.environ.get(
-        "PHOC_MODEL_DIR",
-        "/home/hermes/decision-model/09_常态探索/release_prep_20261007/02_hf_release/hf_repo")
-    device = os.environ.get("PHOC_DEVICE", "auto")
-    perm_avg = os.environ.get("PHOC_PERM_AVG", "0") == "1"
-    threads = os.environ.get("PHOC_THREADS") or None
-    engine = Engine(model_dir, device=device, model_name=MODEL_NAME,
-                    perm_avg=perm_avg, warm=True,
-                    threads=int(threads) if threads else None)
-    log.info("engine ready: %s on %s (perm_avg=%s)", MODEL_NAME,
-             engine.device, perm_avg)
-
     @app.get("/health")
     def health():
+        eng = engine
+        if eng is None:
+            # Distinct from "ok": the process is up but cannot decide yet.
+            return {
+                "status": "starting",
+                "model": MODEL_NAME,
+                "model_loaded": False,
+                "device": None,
+                "uptime_s": round(time.time() - START_TIME, 1),
+            }
         return {
             "status": "ok",
             "model": MODEL_NAME,
             "model_loaded": True,
-            "device": engine.device.type,
+            "device": eng.device.type,
             "uptime_s": round(time.time() - START_TIME, 1),
         }
 
-    @app.get("/v1/models", dependencies=[Depends(auth_guard)])
+    @app.get("/v1/models", dependencies=[Depends(auth_guard),
+                                         Depends(engine_ready)])
     def models():
         return {
             "object": "list",
@@ -250,15 +355,18 @@ def create_app() -> FastAPI:
                               perm_used=perm or engine.perm_avg,
                               option_scores=option_scores)
 
-    @app.post("/v1/systemone", dependencies=[Depends(auth_guard)])
+    @app.post("/v1/systemone", dependencies=[Depends(auth_guard),
+                                             Depends(engine_ready)])
     def system_one(req: SystemOneRequest):
         return _serve(req, perm=False)
 
-    @app.post("/v1/systemone/permute", dependencies=[Depends(auth_guard)])
+    @app.post("/v1/systemone/permute", dependencies=[Depends(auth_guard),
+                                                     Depends(engine_ready)])
     def system_one_permute(req: SystemOneRequest):
         return _serve(req, perm=True)
 
-    @app.post("/v1/systemone/batch", dependencies=[Depends(auth_guard)])
+    @app.post("/v1/systemone/batch", dependencies=[Depends(auth_guard),
+                                                   Depends(engine_ready)])
     def system_one_batch(body: Union[List[SystemOneRequest], BatchRequest]):
         reqs = body.requests if isinstance(body, BatchRequest) else body
         if not reqs:
@@ -276,4 +384,7 @@ def create_app() -> FastAPI:
     return app
 
 
+# The module-level ASGI app uvicorn resolves for `phocinae.server:app`.
+# create_app() itself is side-effect free: the engine is built by the lifespan
+# startup handler above, so `import phocinae.server` never loads a model.
 app = create_app()

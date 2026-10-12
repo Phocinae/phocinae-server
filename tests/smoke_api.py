@@ -1,5 +1,8 @@
 """API smoke test: boots the real server on a test port and exercises every
-P0 contract branch. Run: python tests/smoke_api.py  (CPU engine; ~40s)."""
+P0 contract branch. Run: python tests/smoke_api.py  (CPU engine; ~40s).
+
+Requires PHOC_MODEL_DIR (see tests/_util.py); skips with exit 0 when unset.
+"""
 
 import json
 import os
@@ -7,14 +10,18 @@ import subprocess
 import sys
 import time
 
-import requests
-
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
-VENV = "/home/hermes/decision-model/.venv"
-MODEL_DIR = os.environ.get(
-    "PHOC_MODEL_DIR",
-    "/home/hermes/decision-model/09_常态探索/release_prep_20261007/02_hf_release/hf_repo")
+sys.path.insert(0, ROOT)
+sys.path.insert(0, HERE)
+
+import requests
+
+from _util import python_exe, require_model_dir  # noqa: E402
+
+# No author-specific virtualenv: spawn the interpreter running this script.
+VENV = python_exe()
+MODEL_DIR = os.environ.get("PHOC_MODEL_DIR", "")
 
 PORT = 8166
 BASE = "http://127.0.0.1:%d" % PORT
@@ -34,12 +41,16 @@ def boot(port, env_extra=None):
         "PHOC_MODEL_DIR": MODEL_DIR,
         "PHOC_DEVICE": "cpu",
         "PHOC_THREADS": "8",
+        # spawn the checkout (not an installed copy) of phocinae
         "PYTHONPATH": ROOT,
+        # keep the child's logging printable on non-UTF-8 consoles
+        "PYTHONUTF8": "1",
+        "PYTHONIOENCODING": "utf-8",
     })
     if env_extra:
         env.update(env_extra)
     p = subprocess.Popen(
-        [VENV + "/bin/python", "-m", "uvicorn", "phocinae.server:app",
+        [VENV, "-m", "uvicorn", "phocinae.server:app",
          "--host", "127.0.0.1", "--port", str(port), "--log-level", "warning"],
         cwd=ROOT, env=env,
         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -75,6 +86,8 @@ GOOD_REQ = {
 
 
 def main():
+    global MODEL_DIR
+    MODEL_DIR = require_model_dir("tests/smoke_api.py")
     proc = boot(PORT)
     try:
         wait_ready(BASE, proc)

@@ -11,10 +11,11 @@ import time
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 sys.path.insert(0, ROOT)
+sys.path.insert(0, HERE)
 
-MODEL_DIR = os.environ.get(
-    "PHOC_MODEL_DIR",
-    "/home/hermes/decision-model/09_常态探索/release_prep_20261007/02_hf_release/hf_repo")
+from _util import require_model_dir  # noqa: E402
+
+MODEL_DIR = require_model_dir("tests/cpu_smoke.py")
 
 REQ = {
     "state": "The agent was asked to restart the web server. It checked the logs, "

@@ -7,7 +7,11 @@ import time
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 sys.path.insert(0, ROOT)
-MODEL_DIR = "/home/hermes/decision-model/09_常态探索/release_prep_20261007/02_hf_release/hf_repo"
+sys.path.insert(0, HERE)
+
+from _util import require_model_dir  # noqa: E402
+
+MODEL_DIR = require_model_dir("tests/bench_compile.py")
 
 import torch
 from phocinae.engine import Engine, QTYPES

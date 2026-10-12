@@ -2,7 +2,9 @@ import os, sys, time
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 sys.path.insert(0, ROOT)
-MODEL_DIR = "/home/hermes/decision-model/09_常态探索/release_prep_20261007/02_hf_release/hf_repo"
+sys.path.insert(0, HERE)
+from _util import require_model_dir
+MODEL_DIR = require_model_dir("tests/profile_run.py")
 from phocinae.engine import Engine
 REQ = {
     "state": "The agent was asked to restart the web server. It checked the logs, removed a stale lock file in /var/run and restarted nginx successfully. Memory usage returned to normal afterwards.",

@@ -1,6 +1,6 @@
 [project]
 name = "phocinae-server"
-version = "0.1.5"
+version = "0.1.6"
 description = "Self-contained typed-decisions (system-one) inference server for the Phocinae-Largha-150M-v1 model"
 readme = "README.md"
 license = { text = "Apache-2.0" }
@@ -11,6 +11,12 @@ dependencies = [
     "uvicorn>=0.20",
     "torch>=2.1",
     "requests>=2.25",
+    # engine.run() moves the forward-pass tensors to host memory via
+    # Tensor.numpy() (phocinae/engine.py, _decode_rows call site). torch does
+    # NOT install numpy, so without this declaration every POST /v1/systemone
+    # failed with "RuntimeError: Numpy is not available" (HTTP 500) on a clean
+    # `pip install phocinae-server`.
+    "numpy>=1.24",
 ]
 
 [project.optional-dependencies]
