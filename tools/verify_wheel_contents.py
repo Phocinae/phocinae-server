@@ -25,6 +25,7 @@
 每个包的 `REQUIRE` 就是"这个包最容易漏掉的那个文件"，来自上面三次事故。
 """
 import argparse
+import ast
 import glob
 import io
 import os
@@ -44,6 +45,35 @@ REQUIRE = {
 
 FORBID = ("/tests/", "test_", "__pycache__", ".pyc", ".egg-info",
           "/.github/", ".pytest_cache", "/poc/", "/examples/")
+
+
+def _internal_versions(z):
+    """wheel 里**所有**模块级版本常量：{相对路径: [(常量名, 值)]}。
+
+    一次发布漏改一个位点很容易，而且很难自查 —— phocinae-guard 0.1.6 就漏了
+    `guard.py` 的 `VERSION`（它不叫 `__version__`），于是发出去的包
+    `phocinae-guard --version` 报的是上一版。放进"上传前必跑"的这道闸，
+    漏位点会在发布**之前**失败。
+    """
+    found = {}
+    for n in z.namelist():
+        if not n.endswith(".py"):
+            continue
+        try:
+            tree = ast.parse(z.read(n).decode("utf-8", "replace"))
+        except (SyntaxError, UnicodeDecodeError):
+            continue
+        hits = []
+        for node in tree.body:
+            if isinstance(node, ast.Assign):
+                for t in node.targets:
+                    if isinstance(t, ast.Name) and t.id in ("VERSION", "__version__"):
+                        v = getattr(node.value, "value", None)
+                        if isinstance(v, str):
+                            hits.append((t.id, v))
+        if hits:
+            found[n] = hits
+    return found
 
 
 def main():
@@ -104,6 +134,15 @@ def main():
               % f_ver)
     else:
         print("  NOTE no expected version supplied; skipping the tag/version comparison")
+
+    # 包内**每一个**模块级版本常量都必须等于 METADATA 的 Version。
+    # 这条是 0.1.6 事故的守卫：那次 README/元数据都升到 0.1.6，唯独 guard.py 的 VERSION
+    # 还是 0.1.5，而它是在**上传之后**才被发现的。这一条在**上传之前**跑。
+    for _path, _hits in sorted(_internal_versions(z).items()):
+        for _const, _value in _hits:
+            check("%s:%s == %s" % (_path, _const, f_ver), _value == f_ver,
+                  "found %r (a missed version site ships a package that misreports itself)"
+                  % _value)
 
     # 关键数据文件 —— 这一条就是 0.2.2 那次事故的守卫
     for need in REQUIRE.get(args.expect_name, []):

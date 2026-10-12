@@ -56,3 +56,10 @@ desktop.ini
 # directory is output, not source: a local `python -m build --outdir dist-upload` put a
 # 1.2 MB wheel into the index once already.
 dist-upload/
+
+# Scratch space for the verification tools when the system temp directory is not writable.
+.phoc-scratch/
+
+# Scratch space for the verification tools (system temp may be unwritable).
+.phocinae-verify/
+.phoc-scratch/
