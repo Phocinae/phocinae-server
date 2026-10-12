@@ -88,6 +88,12 @@ jobs:
       # minutes and prints a wall of JWT claims instead of an instruction. PyPI has no
       # API for configuring a trusted publisher (its settings page answers 403 to a
       # token), so the only fix is a human on that page — this step names it.
+      # 发布前打开将要上传的那个 wheel 看一眼。源码树里的测试**看不到打包缺陷** ——
+      # mcp 0.2.2 少带 L0 表、cli 0.1.1 带的是手抄的旧表，两者在源码树里都是绿的。
+      # 这一步读取 wheel 内容（含 METADATA 的版本），不联网、不装依赖。
+      - name: Inspect the built wheel before publishing
+        run: python tools/verify_wheel_contents.py "dist-upload/*.whl" --expect-name phocinae-server --expect-version "${{ github.ref_name }}"
+
       - name: Preflight the PyPI credential
         id: preflight
         env:
