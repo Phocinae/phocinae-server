@@ -49,3 +49,10 @@ desktop.ini
 *~
 .idea/
 .vscode/
+
+# ---- CI build output ----
+# The release workflows build with `--outdir dist-upload` so the uploaded artifact is
+# exactly what the commit produced (dist/ holds historical releases on purpose). This
+# directory is output, not source: a local `python -m build --outdir dist-upload` put a
+# 1.2 MB wheel into the index once already.
+dist-upload/
