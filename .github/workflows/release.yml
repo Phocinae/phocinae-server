@@ -1,0 +1,131 @@
+# Release phocinae-server to PyPI with OIDC trusted publishing.
+#
+# ---------------------------------------------------------------------------
+# One-time setup on PyPI — https://pypi.org/manage/project/phocinae-server/settings/publishing/
+#   PyPI Project Name : phocinae-server
+#   Owner             : Phocinae
+#   Repository name   : phocinae-server
+#   Workflow filename : release.yml
+#   Environment name  : pypi
+# Nothing else is needed: there is no PYPI_API_TOKEN secret and no password
+# anywhere. The publish job mints a short-lived OIDC token from
+# `permissions: id-token: write` and PyPI exchanges it for a one-shot upload
+# credential. The GitHub environment must be named `pypi` because that is the
+# `environment: name:` below; PyPI rejects the exchange if they disagree.
+# ---------------------------------------------------------------------------
+name: Release
+
+on:
+  # workflow_dispatch is how a tag whose publish failed gets re-run after a fix:
+  # a tag push executes the workflow file AT THE TAGGED COMMIT, so a fix committed
+  # after the tag would never run under that tag. Dispatching on the branch runs
+  # this file and checks out the fixed tree.
+  workflow_dispatch:
+  push:
+    tags: ['v*']
+
+env:
+  # 非 UTF-8 控制台（windows runner 是 cp1252/437）下，打印非 ASCII 会抛
+  # UnicodeEncodeError 把 job 拖红。脚本自身已 reconfigure 兜底，
+  # 这里覆盖 pip/build 与子进程的输出。
+  PYTHONUTF8: '1'
+
+jobs:
+  # Nothing is published before this job is green: an untested artifact must
+  # never reach the registry.
+  test:
+    name: test the artifact before publishing
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install the minimum the model-free checks import
+        run: |
+          # Same minimal set as ci.yml: tests/test_router.py imports only stdlib
+          # at module scope; phocinae.router needs `requests` (not torch), and
+          # main() skips the model half when PHOC_MODEL_DIR is unset or torch is
+          # missing. torch/numpy/fastapi/uvicorn are deliberately not installed.
+          python -m pip install --upgrade pip
+          pip install -e . --no-deps
+          pip install requests
+          pip install build
+
+      # PHOC_MODEL_DIR is unset on purpose (same rule as ci.yml): the model half
+      # SKIPs cleanly with exit 0 and no 330 MB download blocks a release.
+      - name: Model-free router checks
+        run: python tests/test_router.py
+
+      # --outdir instead of the default dist/: dist/ holds historical release
+      # artifacts that are tracked in git (0.1.2 … 0.1.5). Building into a clean
+      # directory means only what this commit produced can be uploaded, instead
+      # of relying on skip-existing to quietly discard stale files.
+      - name: Build sdist + wheel
+        run: python -m build --outdir dist-upload
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist-upload/
+          if-no-files-found: error
+
+  publish:
+    needs: test
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    environment:
+      name: pypi
+      url: https://pypi.org/p/phocinae-server
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist-upload/
+
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: dist-upload/
+          # A re-run of an already-published tag is a no-op, not a failure.
+          skip-existing: true
+
+  # Publishing alone leaves the tag without a GitHub Release page. This job
+  # closes that gap and is idempotent, so re-running a tag is safe.
+  release:
+    needs: publish
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Create the GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # A tag push releases the pushed tag; a workflow_dispatch run on a
+          # branch releases the version in pyproject.toml (that tag already
+          # exists — this is the same convention as the npm publish workflow).
+          if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
+            REF_NAME="${GITHUB_REF_NAME}"
+          else
+            VERSION="$(python -c "import tomllib,pathlib; print(tomllib.loads(pathlib.Path('pyproject.toml').read_text(encoding='utf-8'))['project']['version'])")"
+            REF_NAME="v${VERSION}"
+          fi
+          # Idempotent: an existing Release must not turn a good publish red.
+          if gh release view "${REF_NAME}" >/dev/null 2>&1; then
+            echo "release ${REF_NAME} already exists; skipping"
+            exit 0
+          fi
+          gh release create "${REF_NAME}" \
+            --title "${REF_NAME}" \
+            --generate-notes
