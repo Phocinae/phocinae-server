@@ -28,6 +28,7 @@ import argparse
 import glob
 import io
 import os
+import re
 import sys
 import zipfile
 
@@ -61,6 +62,14 @@ def main():
     print("wheel: %s" % os.path.basename(whl))
 
     expect_ver = args.expect_version.lstrip("v") if args.expect_version else ""
+    # 手工 workflow_dispatch 时 github.ref_name 是**分支名**（如 "main"），不是版本号。
+    # 把它当版本比较会在每次手工重发时稳定误报"版本不匹配"—— 而手工重发正是修好
+    # 凭据后要走的路。识别出这种情况就跳过比较并说明，而不是报错。
+    if expect_ver and not re.match(r"^\d+\.\d+", expect_ver):
+        print("  NOTE --expect-version %r is not a version (a manual dispatch passes the"
+              " branch name);" % expect_ver)
+        print("       skipping the tag/version comparison. A tag push compares it.")
+        expect_ver = ""
     fails = []
 
     def check(name, cond, detail=""):

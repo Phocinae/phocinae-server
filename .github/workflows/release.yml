@@ -66,6 +66,15 @@ jobs:
       - name: Build sdist + wheel
         run: python -m build --outdir dist-upload
 
+
+
+
+      # Open the wheel that was just built and look inside it. Tests run against the
+      # source tree cannot see packaging defects: phocinae-mcp 0.2.2 shipped without its
+      # offline allowlist and phocinae-cli 0.1.1 shipped a stale hand-copied table, both
+      # with a green source tree. Reads METADATA and the file list; no network needed.
+      - name: Inspect the built wheel before publishing
+        run: python tools/verify_wheel_contents.py "dist-upload/*.whl" --expect-name phocinae-server --expect-version "${{ github.ref_name }}"
       - uses: actions/upload-artifact@v4
         with:
           name: dist
@@ -82,17 +91,6 @@ jobs:
       name: pypi
       url: https://pypi.org/p/phocinae-server
     steps:
-
-      # Fail fast, and say what to do. The OIDC exchange is the one step whose failure
-      # the committer cannot see in the diff, and finding out after a full build wastes
-      # minutes and prints a wall of JWT claims instead of an instruction. PyPI has no
-      # API for configuring a trusted publisher (its settings page answers 403 to a
-      # token), so the only fix is a human on that page — this step names it.
-      # 发布前打开将要上传的那个 wheel 看一眼。源码树里的测试**看不到打包缺陷** ——
-      # mcp 0.2.2 少带 L0 表、cli 0.1.1 带的是手抄的旧表，两者在源码树里都是绿的。
-      # 这一步读取 wheel 内容（含 METADATA 的版本），不联网、不装依赖。
-      - name: Inspect the built wheel before publishing
-        run: python tools/verify_wheel_contents.py "dist-upload/*.whl" --expect-name phocinae-server --expect-version "${{ github.ref_name }}"
 
       - name: Preflight the PyPI credential
         id: preflight
