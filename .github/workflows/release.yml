@@ -91,6 +91,15 @@ jobs:
       name: pypi
       url: https://pypi.org/p/phocinae-server
     steps:
+      # The test job uploads the built distributions as an artifact named `dist`; this job
+      # has its own empty workspace, so without this step there is nothing to upload and the
+      # publish fails with "Cannot find file (or expand pattern)". Downloading restores the
+      # tree at the same path the build used, which is what `packages-dir` addresses.
+      - name: Download the built distributions
+        uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist-upload/
 
       - name: Preflight the PyPI credential
         id: preflight
