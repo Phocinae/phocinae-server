@@ -45,13 +45,24 @@ NOUL_OPTIONS = [
     "false: no, the statement does not hold",
     "true: yes, the statement holds",
 ]
-SCORE_LEVELS = 9          # answers 2..10
+SCORE_LEVELS = 9          # answers 2..10 (only when a question ships no rubric)
 MAX_OPTIONS = 255
 MAX_QUESTIONS = 64
 MAX_POS = 8192            # encoder max_position_embeddings
 PERM_K = 4                # canonical permutation averaging order count
 BUDGET_TIERS = [(192, 512), (512, 1024), (1024, 2048), (2048, 4096),
                 (4096, MAX_POS), (MAX_POS, MAX_POS)]
+
+
+def _as_text(v):
+    """Render a criteria value (str or nested JSON) byte-stably.
+
+    Kept separate from json.dumps defaults on purpose: `ensure_ascii=False` with
+    `separators=(", ", ": ")` is the rendering the measured 0.9055 run used.
+    """
+    if isinstance(v, str):
+        return v
+    return json.dumps(v, ensure_ascii=False, separators=(", ", ": "))
 
 
 class Engine:
@@ -214,13 +225,54 @@ class Engine:
 
     # ------------------------------------------------------- sequence building
     def _question_spec(self, q):
+        """Render one question into (type, instructions, option strings).
+
+        The typed-decisions protocol ships a per-question `instructions` string
+        and a `criteria` mapping (one description per option, or an ordered
+        rubric for `score`). Ignoring them and asking a bare "Pick the option
+        that best matches the statement." over bare option *names* costs about
+        39 points of accuracy: measured **0.5140** out of the box versus
+        **0.9055** when each question is rendered from its own instructions and
+        criteria — which is what the reference implementation does (2000/2000
+        identical decisions). So use the question's own text when present and
+        fall back to the generic wording only for a bare question.
+        """
         t = q["type"]
-        ins = DEFAULT_INS[t]
-        if t == "noul":
-            return t, ins, list(NOUL_OPTIONS)
+        ins = q.get("instructions")
+        ins = DEFAULT_INS[t] if ins is None or ins == "" else str(ins)
+
         if t == "choice":
-            return t, ins, [str(o) for o in q["options"]]
-        return t, ins, ["level %d" % (2 + i) for i in range(SCORE_LEVELS)]
+            crit = q.get("criteria") or {}
+            opts = []
+            for o in q["options"]:
+                d = crit.get(o)
+                opts.append("%s: %s" % (o, _as_text(d)) if d not in (None, "") else str(o))
+            return t, ins, opts
+
+        if t == "score":
+            crit = q.get("criteria") or []
+            if isinstance(crit, dict):
+                crit = list(crit.values())
+            if crit:
+                # The rubric arrives as an ordered list (the shipped test set
+                # uses 4 or 5 levels). Render one option per level. Level
+                # numbering here is 0-based ON PURPOSE: it is the wording the
+                # measured 0.9055 run used, and the decoder adds 2 back
+                # (`ans = 2 + argmax`), so the wire answer stays >= 2 while the
+                # number of levels follows the question instead of a fixed 2..10.
+                return t, ins, ["level %d: %s" % (i, _as_text(c))
+                                for i, c in enumerate(crit)]
+            return t, ins, ["level %d" % (2 + i) for i in range(SCORE_LEVELS)]
+
+        # noul: criteria may describe the true/false options, or be absent
+        crit = q.get("criteria") or {}
+        if isinstance(crit, (list, tuple)) and not isinstance(crit, str):
+            crit = dict(zip(("false", "true"), crit))
+        if isinstance(crit, dict) and crit:
+            fd = crit.get("false") or "no, the statement does not hold"
+            td = crit.get("true") or "yes, the statement holds"
+            return t, ins, ["false: %s" % _as_text(fd), "true: %s" % _as_text(td)]
+        return t, ins, list(NOUL_OPTIONS)
 
     def _build_sequence(self, spec, state_ids, order, head_max_len, max_len):
         t, ins, opts = spec

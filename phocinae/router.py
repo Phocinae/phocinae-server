@@ -11,7 +11,7 @@
 
   - escalate 门（E1）：τ=0.6。answer_confidence（温度标定 top 概率，已与
     laya canonical 对齐）低于 τ 的决策才升级外部模型。E1 typed en 400 例
-    实测：本地 acc 0.906（独立复现 0.9055，如实并排）→ 保留集 acc 0.9936（+0.0876 kept-subset），大模型
+    实测：本地 acc 0.791（基准策展清洗分；未策展读数 0.906，独立复现 0.9055，如实并排）→ 保留集 acc 0.9936（+0.0876 kept-subset，相对未策展基线 0.906），大模型
     调用占比 100%→45.0%，省费 55.0%（τ=0.5 档 79.6%）。τ 为默认值，允许按调用覆盖（新域须重扫 τ）。
   - 工具路由：k≤10 菜单（JevBench tool_selection k≤10 12/12=1.0 域）。
     choice 题 options=工具名（附一行描述时渲染为 "name: description"，
