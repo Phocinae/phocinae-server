@@ -7,4 +7,4 @@ numpy is needed by engine.run() (Tensor.numpy()) and requests only by the
 optional HTTP mode of phocinae/router.py.
 """
 
-__version__ = "0.1.6"
+__version__ = "0.1.8"
